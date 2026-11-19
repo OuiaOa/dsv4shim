@@ -39,4 +39,40 @@ try {
   fs.rmSync(root, { recursive: true, force: true });
 }
 
-console.log('port manager: 2 passed, 0 failed');
+// dsv4shim-usage must find the shim on the port it actually bound (active-port.json), not just
+// cfg.port/8788. Before the fix it printed "shim not running" whenever the shim had shifted ports.
+{
+  const http = await import('node:http');
+  const { execFile } = await import('node:child_process');
+  const here = path.dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1'));
+  const uroot = fs.mkdtempSync(path.join(os.tmpdir(), 'dsv4shim-usage-port-'));
+  const ucfg = path.join(uroot, 'config'), udata = path.join(uroot, 'data');
+  fs.mkdirSync(ucfg, { recursive: true }); fs.mkdirSync(udata, { recursive: true });
+  const defaults = JSON.parse(fs.readFileSync(path.join(here, 'config.default.json'), 'utf8'));
+  fs.writeFileSync(path.join(ucfg, 'config.json'), JSON.stringify({ ...defaults, port: 8788 }));
+  fs.writeFileSync(path.join(ucfg, 'sentinel'), 'usage-test-sentinel\n');
+  let sawAuth = '';
+  const fake = http.createServer((req, res) => {
+    sawAuth = req.headers.authorization || '';
+    if (req.url !== '/_dsv4shim/usage') { res.writeHead(404); return res.end(); }
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ todayUsd: 0.25, capUsd: 10, burn: { tokensPerMin: 0, usdPerHour: 0 } }));
+  });
+  await new Promise((resolve, reject) => { fake.once('error', reject); fake.listen(0, '127.0.0.1', resolve); });
+  const shiftedPort = fake.address().port;
+  fs.writeFileSync(path.join(udata, 'active-port.json'), JSON.stringify({ app: 'dsv4shim', port: shiftedPort, preferredPort: 8788 }));
+  try {
+    const env = { ...process.env, DSV4SHIM_CONFIG_DIR: ucfg, DSV4SHIM_DATA_DIR: udata };
+    delete env.DSV4SHIM_PORT;
+    const out = await new Promise((resolve, reject) => execFile(process.execPath, [path.join(here, 'bin', 'dsv4shim-usage')],
+      { env, timeout: 15000 }, (err, stdout) => (err ? reject(err) : resolve(stdout))));
+    assert.ok(!out.includes('shim not running'), `usage report missed the shifted shim on ${shiftedPort}:\n${out}`);
+    assert.match(out, /today\s+: \$0\.25/, 'live panel comes from the shim on the active port');
+    assert.equal(sawAuth, 'Bearer usage-test-sentinel', 'usage request carries the local sentinel');
+  } finally {
+    await new Promise(resolve => fake.close(resolve));
+    fs.rmSync(uroot, { recursive: true, force: true });
+  }
+}
+
+console.log('port manager: 3 passed, 0 failed');

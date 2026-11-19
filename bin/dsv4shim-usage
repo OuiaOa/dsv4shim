@@ -16,6 +16,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import http from 'node:http';
+import { configuredPort } from './dsv4shim-port-manager.mjs';
 
 const HOME = os.homedir();
 const CONFIG_DIR = process.env.DSV4SHIM_CONFIG_DIR || path.join(HOME, '.config', 'dsv4shim');
@@ -211,7 +212,10 @@ if (!rows.length) {
 }
 
 // live shim state
-const port = cfg.port || 8788;
+// Same resolution as the shim and every other CLI: env override, then the port the shim actually
+// bound (active-port.json, sticky after a fallback), then config, then the default. Reading only
+// cfg.port reported "shim not running" whenever the shim had shifted off 8788.
+const port = configuredPort({ envVar: 'DSV4SHIM_PORT', dataDir: DATA_DIR, app: 'dsv4shim', configPort: cfg.port, defaultPort: 8788 });
 // The usage endpoint embeds the account balance, so it requires the local sentinel.
 let sentinel = '';
 try { sentinel = fs.readFileSync(path.join(CONFIG_DIR, 'sentinel'), 'utf8').trim(); } catch { /* shim will 401 */ }
